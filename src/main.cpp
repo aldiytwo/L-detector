@@ -6,14 +6,13 @@
 #include <Update.h>
 #include <ESPmDNS.h>
 #include <DNSServer.h> 
+#include <Preferences.h> // Secure Non-volatile internal hardware storage engine
 #include "dashboard.h" 
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 6, /* data=*/ 5);
+Preferences preferences; // Launches data flash memory register namespace
 
 const String FIRMWARE_VERSION = PROJECT_VERSION; 
-const char* ssid     = "toi";
-const char* password = "dcba@4321";
-
 WebServer server(80);
 DNSServer dnsServer; 
 
@@ -37,10 +36,7 @@ int currentMode = 2;
 int maxMappingCeiling = 550;    
 String modeString = "MED";
 bool ledState = false;          
-
 bool oledDisplayEnabledState = true;
-
-// Screen geometry flip tracking state (false = normal, true = 180-deg rotated)
 bool screenFlippedState = false;
 
 unsigned long oledSplashEndMillis = 0;
@@ -48,7 +44,6 @@ unsigned long apShutdownTimeoutMillis = 0;
 const unsigned long AP_LIFETIME_DURATION = 120000; 
 
 const byte DNS_PORT = 53;
-
 IPAddress ap_local_IP(4,3,2,1);
 IPAddress ap_gateway(4,3,2,1);
 IPAddress ap_subnet(255,255,255,0);
@@ -56,11 +51,11 @@ IPAddress ap_subnet(255,255,255,0);
 void handleRoot();
 void handleGetData();
 void handleSetSens();
+void handleSaveWiFi();
 void handleToggleDisplayFlip();
 void handleToggleScreenPower();
 void handleToggleLED();
 void handleForceAP();
-void handleConnectWiFi();
 void handleRebootDevice();
 void flashLEDFeedback();
 void launchLocalFallbackAP();
@@ -89,25 +84,35 @@ void handleSetSens() {
   server.send(200, "text/plain", "OK");
 }
 
+void handleSaveWiFi() {
+  if (server.hasArg("ssid")) {
+    String req_ssid = server.arg("ssid");
+    String req_pass = server.hasArg("pass") ? server.arg("pass") : "";
+    
+    // Open Preferences namespace called "netcfg", read/write mode (false)
+    preferences.begin("netcfg", false);
+    preferences.putString("ssid", req_ssid);
+    preferences.putString("pass", req_pass);
+    preferences.end();
+    
+    server.send(200, "text/plain", "SAVED");
+    delay(500);
+    executeWiFiStationConnect(); // Immediately connect to the newly provisioned token maps
+  } else {
+    server.send(400, "text/plain", "MISSING SSID");
+  }
+}
+
 void handleToggleDisplayFlip() {
   screenFlippedState = !screenFlippedState;
-  
-  // Controls internal scanning re-mapping drivers dynamically
-  if (screenFlippedState) {
-    u8g2.setDisplayRotation(U8G2_R2); // Hardware 180-degree rotation inversion orientation
-  } else {
-    u8g2.setDisplayRotation(U8G2_R0); // Reset back to default true flat coordinate layout
-  }
-  
-  oledSplashEndMillis = millis() + 1500; // Flash structural update overlay confirm window
-  flashLEDFeedback();
+  u8g2.setDisplayRotation(screenFlippedState ? U8G2_R2 : U8G2_R0);
+  oledSplashEndMillis = millis() + 1500; flashLEDFeedback();
   server.send(200, "text/plain", "OK");
 }
 
 void handleToggleScreenPower() {
   oledDisplayEnabledState = !oledDisplayEnabledState;
-  u8g2.setPowerSave(oledDisplayEnabledState ? 0 : 1); 
-  flashLEDFeedback();
+  u8g2.setPowerSave(oledDisplayEnabledState ? 0 : 1); flashLEDFeedback();
   server.send(200, "text/plain", "OK");
 }
 
@@ -118,31 +123,40 @@ void handleToggleLED() {
 }
 
 void handleForceAP() { server.send(200, "text/plain", "OK"); delay(500); launchLocalFallbackAP(); }
-void handleConnectWiFi() { server.send(200, "text/plain", "OK"); delay(500); executeWiFiStationConnect(); }
 void handleRebootDevice() { server.send(200, "text/plain", "OK"); delay(500); ESP.restart(); }
 
 void launchLocalFallbackAP() {
   wifiConnected = false; apModeActive = true; WiFi.disconnect(true); WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(ap_local_IP, ap_gateway, ap_subnet); WiFi.softAP("LeakDetector-AP", "12345678"); 
   dnsServer.start(DNS_PORT, "*", ap_local_IP); apShutdownTimeoutMillis = millis() + AP_LIFETIME_DURATION; flashLEDFeedback();
-  
   if (oledDisplayEnabledState) {
     u8g2.clearBuffer(); u8g2.setFont(u8g2_font_6x12_tr);
     u8g2.drawStr(X_OFFSET + 8, Y_OFFSET + 12, "HOTSPOT ON"); u8g2.drawStr(X_OFFSET, Y_OFFSET + 24, "CAPTIVE ROUTE");
     u8g2.drawStr(X_OFFSET + 10, Y_OFFSET + 36, "IP: 4.3.2.1"); u8g2.sendBuffer();
   }
-  delay(3000);
 }
 
 void executeWiFiStationConnect() {
   apModeActive = false; dnsServer.stop(); WiFi.softAPdisconnect(true); WiFi.disconnect(true); WiFi.mode(WIFI_STA);
   
+  // Read saved network data dynamically out of flash storage keys
+  preferences.begin("netcfg", true); // Open in read-only mode (true)
+  String storedSSID = preferences.getString("ssid", "");
+  String storedPASS = preferences.getString("pass", "");
+  preferences.end();
+  
+  if (storedSSID == "") {
+    launchLocalFallbackAP(); // No tokens exist inside flash -> Boot up Hotspot right away
+    return;
+  }
+  
   if (oledDisplayEnabledState) {
     u8g2.clearBuffer(); u8g2.setFont(u8g2_font_6x12_tr); u8g2.drawStr(X_OFFSET + 8, Y_OFFSET + 15, "CONNECTING"); u8g2.drawStr(X_OFFSET + 12, Y_OFFSET + 28, "TO WIFI..."); u8g2.sendBuffer();
   }
   
-  WiFi.begin(ssid, password); unsigned long startConnectTime = millis();
+  WiFi.begin(storedSSID.c_str(), storedPASS.c_str()); unsigned long startConnectTime = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - startConnectTime < 5000)) { delay(100); }
+  
   if (WiFi.status() == WL_CONNECTED) {
     wifiConnected = true; if (MDNS.begin("leakdetector")) { MDNS.addService("http", "tcp", 80); }
     if (oledDisplayEnabledState) {
@@ -156,13 +170,15 @@ void setup() {
   Serial.begin(115200); u8g2.begin(); pinMode(BUTTON_PIN, INPUT_PULLUP); pinMode(LED_PIN, OUTPUT); digitalWrite(LED_PIN, HIGH); 
   u8g2.clearBuffer(); u8g2.setFont(u8g2_font_6x12_tr); u8g2.drawStr(X_OFFSET + 10, Y_OFFSET + 15, "LEAK DETECT");
   u8g2.drawStr(X_OFFSET + 14, Y_OFFSET + 28, FIRMWARE_VERSION.c_str()); u8g2.sendBuffer(); delay(2000);
+  
   executeWiFiStationConnect();
+
   server.on("/", handleRoot); server.on("/getdata", handleGetData); server.on("/setsens", handleSetSens);
-  server.on("/flipdisplay", handleToggleDisplayFlip); // Registers the flip router path
-  server.on("/togglescreen", handleToggleScreenPower); 
-  server.on("/toggleled", handleToggleLED); server.on("/forceap", handleForceAP);
-  server.on("/connectwifi", handleConnectWiFi); server.on("/reboot", handleRebootDevice);
+  server.on("/savewifi", handleSaveWiFi); // Registers the flash memory credential storage listener endpoint path
+  server.on("/flipdisplay", handleToggleDisplayFlip); server.on("/togglescreen", handleToggleScreenPower); 
+  server.on("/toggleled", handleToggleLED); server.on("/forceap", handleForceAP); server.on("/reboot", handleRebootDevice);
   server.onNotFound([]() { server.send(200, "text/html", HTML_INDEX); });
+  
   server.on("/update", HTTP_POST, []() {
     server.sendHeader("Connection", "close");
     server.send(200, "text/html", "<html><head><meta http-equiv='refresh' content='5;url=/'></head><body style='background:#121212;color:#00ff66;font-family:monospace;text-align:center;padding-top:50px;'><h3>OTA Flash Success!</h3></body></html>");
@@ -209,16 +225,12 @@ void loop() {
   int targetHeight = map(peakToPeak, 20, maxMappingCeiling, 0, DISPLAY_HEIGHT);
   targetHeight = constrain(targetHeight, 0, DISPLAY_HEIGHT); globalLiveHeight = targetHeight;
   for (int i = NUM_BARS - 1; i > 0; i--) { barHeights[i] = barHeights[i - 1]; }
-  
-  // FIX: Array brackets formatting set strictly here to avoid compiler index conflicts
-  barHeights[0] = targetHeight; 
-  
+  barHeights = targetHeight; 
   if (!oledDisplayEnabledState) return;
 
   u8g2.clearBuffer();
   if (millis() < oledSplashEndMillis) {
-    u8g2.setFont(u8g2_font_6x12_tr); 
-    u8g2.drawStr(X_OFFSET + 6, Y_OFFSET + 12, "SCREEN ORIENT");
+    u8g2.setFont(u8g2_font_6x12_tr); u8g2.drawStr(X_OFFSET + 6, Y_OFFSET + 12, "SCREEN ORIENT");
     u8g2.drawStr(X_OFFSET + 10, Y_OFFSET + 24, screenFlippedState ? "ROTATION: 180" : "ROTATION: NORMAL");
     u8g2.drawStr(X_OFFSET + 16, Y_OFFSET + 36, modeString.c_str());
   } else {
