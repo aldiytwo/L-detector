@@ -5,19 +5,20 @@
 #include <WebServer.h>
 #include <Update.h>
 #include <ESPmDNS.h>
-#include "dashboard.h" // Links your modular dashboard template file cleanly
+#include "dashboard.h" 
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 6, /* data=*/ 5);
 
-const String FIRMWARE_VERSION = "v1.2.8-Modular"; 
+const String FIRMWARE_VERSION = PROJECT_VERSION; 
 const char* ssid     = "toi";
 const char* password = "dcba@4321";
 
 WebServer server(80);
 
-const int MIC_PIN = 1;          
-const int BUTTON_PIN = 9;       
-const int LED_PIN = 8;          
+const int MIC_PIN = 1;          // GPIO1 (Piezo input)
+const int BUTTON_PIN = 9;       // GPIO9 (BOOT button)
+const int LED_PIN = 8;          // GPIO8 (Onboard blue LED)
+
 const int SAMPLE_WINDOW = 30;   
 const int NUM_BARS = 10;        
 const int DISPLAY_WIDTH = 72;   
@@ -29,18 +30,35 @@ int barHeights[NUM_BARS] = {0};
 volatile int globalLiveHeight = 0; 
 bool wifiConnected = false;        
 
-int currentMode = 1;            
-int maxMappingCeiling = 1800;   
-String modeString = "LOW";
+int currentMode = 2;            // Boots straight into MEDIUM sensitivity
+int maxMappingCeiling = 550;    
+String modeString = "MED";
 bool ledState = false;          
+
+unsigned long oledSplashEndMillis = 0;
+
+void handleRoot();
+void handleGetData();
+void handleSetSens();
+void handleToggleLED();
+void handleRebootDevice();
+void flashLEDFeedback();
 
 void handleRoot() {
   server.send(200, "text/html", HTML_INDEX);
 }
 
 void handleGetData() {
-  String json = "{\"level\":" + String(globalLiveHeight) + ",\"mode\":\"" + modeString + "\",\"led\":" + String(ledState ? "true" : "false") + ",\"version\":\"" + FIRMWARE_VERSION + "\"}";
+  String json = "{\"mode\":\"" + modeString + "\"" + 
+                ",\"led\":" + String(ledState ? "true" : "false") + 
+                ",\"version\":\"" + FIRMWARE_VERSION + "\"}";
   server.send(200, "application/json", json);
+}
+void flashLEDFeedback() {
+  bool originalState = ledState;
+  digitalWrite(LED_PIN, originalState ? HIGH : LOW); 
+  delay(40);                                         
+  digitalWrite(LED_PIN, originalState ? LOW : HIGH); 
 }
 
 void handleSetSens() {
@@ -51,6 +69,9 @@ void handleSetSens() {
     else if (currentMode == 1) { maxMappingCeiling = 1800; modeString = "LOW"; } 
     else if (currentMode == 2) { maxMappingCeiling = 550;  modeString = "MED"; } 
     else if (currentMode == 3) { maxMappingCeiling = 180;  modeString = "HIGH"; }
+    
+    oledSplashEndMillis = millis() + 2000; 
+    flashLEDFeedback();                    
   }
   server.send(200, "text/plain", "OK");
 }
@@ -58,7 +79,14 @@ void handleSetSens() {
 void handleToggleLED() {
   ledState = !ledState;
   digitalWrite(LED_PIN, ledState ? LOW : HIGH); 
+  flashLEDFeedback();                      
   server.send(200, "text/plain", "OK");
+}
+
+void handleRebootDevice() {
+  server.send(200, "text/plain", "REBOOTING...");
+  delay(500);
+  ESP.restart(); 
 }
 
 void setup() {
@@ -92,10 +120,11 @@ void setup() {
     server.on("/getdata", handleGetData);
     server.on("/setsens", handleSetSens);
     server.on("/toggleled", handleToggleLED);
-    
+    server.on("/reboot", handleRebootDevice);
+
     server.on("/update", HTTP_POST, []() {
       server.sendHeader("Connection", "close");
-      server.send(200, "text/plain", (Update.hasError()) ? "OTA Flash Failed!" : "OTA Success! Rebooting...");
+      server.send(200, "text/html", "<html><head><meta http-equiv='refresh' content='5;url=/'></head><body style='background:#121212;color:#00ff66;font-family:monospace;text-align:center;padding-top:50px;'><h3>OTA Flash Success! Returning home...</h3></body></html>");
       delay(1000); ESP.restart();
     }, []() {
       HTTPUpload& upload = server.upload();
@@ -109,6 +138,7 @@ void setup() {
         if (Update.end(true)) { Serial.println("OTA Complete!"); }
       }
     });
+
     server.begin();
     u8g2.clearBuffer(); u8g2.drawStr(X_OFFSET + 8, Y_OFFSET + 12, "SYSTEM OK");
     u8g2.drawStr(X_OFFSET + 2, Y_OFFSET + 24, "IP ADDRESS:");
@@ -124,6 +154,7 @@ void setup() {
 
 void loop() {
   if (wifiConnected) server.handleClient();
+
   if (digitalRead(BUTTON_PIN) == LOW) {
     delay(50);
     if (digitalRead(BUTTON_PIN) == LOW) {
@@ -132,11 +163,12 @@ void loop() {
       else if (currentMode == 1) { maxMappingCeiling = 1800; modeString = "LOW"; } 
       else if (currentMode == 2) { maxMappingCeiling = 550;  modeString = "MED"; } 
       else if (currentMode == 3) { maxMappingCeiling = 180;  modeString = "HIGH"; }
-      u8g2.clearBuffer(); u8g2.setFont(u8g2_font_6x12_tr); u8g2.drawStr(X_OFFSET + 10, Y_OFFSET + 16, "SENSITIVITY");
-      u8g2.drawStr(X_OFFSET + 18, Y_OFFSET + 28, modeString.c_str()); u8g2.sendBuffer();
+      
+      oledSplashEndMillis = millis() + 2000; 
       while(digitalRead(BUTTON_PIN) == LOW) { delay(10); }
     }
   }
+
   unsigned long startMillis = millis(); unsigned int signalMax = 0; unsigned int signalMin = 4095;
   while (millis() - startMillis < SAMPLE_WINDOW) {
     int sample = analogRead(MIC_PIN); if (sample > signalMax) signalMax = sample; if (sample < signalMin) signalMin = sample;
@@ -145,11 +177,22 @@ void loop() {
   int targetHeight = map(peakToPeak, 20, maxMappingCeiling, 0, DISPLAY_HEIGHT);
   targetHeight = constrain(targetHeight, 0, DISPLAY_HEIGHT);
   globalLiveHeight = targetHeight;
+
   for (int i = NUM_BARS - 1; i > 0; i--) { barHeights[i] = barHeights[i - 1]; }
   barHeights[0] = targetHeight; 
-  u8g2.clearBuffer(); int barWidth = (DISPLAY_WIDTH / NUM_BARS) - 2; 
-  for (int i = 0; i < NUM_BARS; i++) {
-    int xPos = X_OFFSET + (i * (barWidth + 2)); int yPos = Y_OFFSET + (DISPLAY_HEIGHT - barHeights[i]); u8g2.drawBox(xPos, yPos, barWidth, barHeights[i]);
+
+  u8g2.clearBuffer();
+  if (millis() < oledSplashEndMillis) {
+    u8g2.setFont(u8g2_font_6x12_tr);
+    u8g2.drawStr(X_OFFSET + 12, Y_OFFSET + 15, "MODE CHG:");
+    u8g2.drawStr(X_OFFSET + 20, Y_OFFSET + 28, modeString.c_str());
+  } else {
+    int barWidth = (DISPLAY_WIDTH / NUM_BARS) - 2; 
+    for (int i = 0; i < NUM_BARS; i++) {
+      int xPos = X_OFFSET + (i * (barWidth + 2)); 
+      int yPos = Y_OFFSET + (DISPLAY_HEIGHT - barHeights[i]); 
+      u8g2.drawBox(xPos, yPos, barWidth, barHeights[i]);
+    }
   }
   u8g2.sendBuffer();
 }
