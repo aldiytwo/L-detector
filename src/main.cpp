@@ -6,11 +6,11 @@
 #include <Update.h>
 #include <ESPmDNS.h>
 #include <DNSServer.h> 
-#include <Preferences.h> // Secure Non-volatile internal hardware storage engine
+#include <Preferences.h> 
 #include "dashboard.h" 
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 6, /* data=*/ 5);
-Preferences preferences; // Launches data flash memory register namespace
+Preferences preferences; 
 
 const String FIRMWARE_VERSION = PROJECT_VERSION; 
 WebServer server(80);
@@ -89,7 +89,6 @@ void handleSaveWiFi() {
     String req_ssid = server.arg("ssid");
     String req_pass = server.hasArg("pass") ? server.arg("pass") : "";
     
-    // Open Preferences namespace called "netcfg", read/write mode (false)
     preferences.begin("netcfg", false);
     preferences.putString("ssid", req_ssid);
     preferences.putString("pass", req_pass);
@@ -97,7 +96,7 @@ void handleSaveWiFi() {
     
     server.send(200, "text/plain", "SAVED");
     delay(500);
-    executeWiFiStationConnect(); // Immediately connect to the newly provisioned token maps
+    executeWiFiStationConnect(); 
   } else {
     server.send(400, "text/plain", "MISSING SSID");
   }
@@ -139,14 +138,13 @@ void launchLocalFallbackAP() {
 void executeWiFiStationConnect() {
   apModeActive = false; dnsServer.stop(); WiFi.softAPdisconnect(true); WiFi.disconnect(true); WiFi.mode(WIFI_STA);
   
-  // Read saved network data dynamically out of flash storage keys
-  preferences.begin("netcfg", true); // Open in read-only mode (true)
+  preferences.begin("netcfg", true); 
   String storedSSID = preferences.getString("ssid", "");
   String storedPASS = preferences.getString("pass", "");
   preferences.end();
   
   if (storedSSID == "") {
-    launchLocalFallbackAP(); // No tokens exist inside flash -> Boot up Hotspot right away
+    launchLocalFallbackAP(); 
     return;
   }
   
@@ -174,7 +172,7 @@ void setup() {
   executeWiFiStationConnect();
 
   server.on("/", handleRoot); server.on("/getdata", handleGetData); server.on("/setsens", handleSetSens);
-  server.on("/savewifi", handleSaveWiFi); // Registers the flash memory credential storage listener endpoint path
+  server.on("/savewifi", handleSaveWiFi); 
   server.on("/flipdisplay", handleToggleDisplayFlip); server.on("/togglescreen", handleToggleScreenPower); 
   server.on("/toggleled", handleToggleLED); server.on("/forceap", handleForceAP); server.on("/reboot", handleRebootDevice);
   server.onNotFound([]() { server.send(200, "text/html", HTML_INDEX); });
@@ -225,7 +223,10 @@ void loop() {
   int targetHeight = map(peakToPeak, 20, maxMappingCeiling, 0, DISPLAY_HEIGHT);
   targetHeight = constrain(targetHeight, 0, DISPLAY_HEIGHT); globalLiveHeight = targetHeight;
   for (int i = NUM_BARS - 1; i > 0; i--) { barHeights[i] = barHeights[i - 1]; }
-  barHeights = targetHeight; 
+  
+  // FIXED: Explicitly set the first index assignment entry to resolve the GitHub compilation failure
+  barHeights[0] = targetHeight; 
+  
   if (!oledDisplayEnabledState) return;
 
   u8g2.clearBuffer();
