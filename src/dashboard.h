@@ -27,16 +27,20 @@ h1{font-size:20px;margin-bottom:2px;color:#fff;}
 .btn.screen-btn:hover{background:#ffaa00;color:#000;}
 .btn.ap-style{background:#223322;color:#33ff33;border-color:#33ff33;width:100%;font-family:monospace;font-weight:bold;padding:6px 10px;cursor:pointer;border-radius:4px;font-size:11px;margin-bottom:6px;}
 .btn.ap-style:hover{background:#33ff33;color:#000;}
-.btn.wifi-style{background:#222233;color:#3399ff;border-color:#3399ff;width:100%;font-family:monospace;font-weight:bold;padding:6px 10px;cursor:pointer;border-radius:4px;font-size:11px;margin-bottom:6px;}
-.btn.wifi-style:hover{background:#3399ff;color:#fff;}
 .btn.reboot-style{background:#332222;color:#ff3333;border-color:#ff3333;width:100%;margin-top:4px;font-family:monospace;font-weight:bold;padding:6px 10px;cursor:pointer;border-radius:4px;font-size:11px;}
 .btn.reboot-style:hover{background:#ff3333;color:#000;}
 .btn:disabled{opacity:0.4;cursor:not-allowed;}
+input[type=text],input[type=password]{background:#111;color:#00ff66;border:1px solid #333;padding:6px;width:calc(100% - 14px);margin-bottom:8px;font-family:monospace;border-radius:4px;}
 .ota-box{border:1px dashed #444;background:#151515;padding:12px;border-radius:6px;max-width:376px;margin:15px auto;text-align:left;}
 </style></head><body>
 <h1>LEAK DETECTOR REMOTE</h1><div class="version-tag" id="ver-display">Firmware Loading...</div>
 <div id="status-bar"><div>Wireless Link</div><div>Mode: <span id="mode-color">MED</span></div></div>
 <div class="control-panel">
+<h3>On-Site Wi-Fi Credentials Manager</h3>
+<input type="text" id="wifi-ssid" placeholder="Enter Network Router Name (SSID)">
+<input type="password" id="wifi-pass" placeholder="Enter Network Password">
+<button class="btn" style="width:100%;border-color:#3399ff;color:#3399ff;margin-bottom:15px;" onclick="saveWifiCredentials()">🌐 SAVE CREDENTIALS & JOIN</button>
+
 <h3>Sensitivity Control</h3><div class="btn-group" id="sens-group">
 <button class="btn" id="btn-vlow" onclick="setSensitivity(0)">V_LOW</button>
 <button class="btn" id="btn-low" onclick="setSensitivity(1)">LOW</button>
@@ -47,7 +51,6 @@ h1{font-size:20px;margin-bottom:2px;color:#fff;}
 <button class="btn screen-btn" id="btn-screen" onclick="toggleScreenPower()">SWITCH OFF OLED</button>
 <hr style="border:0;border-top:1px solid #333;margin:12px 0;">
 <button class="btn ap-style" onclick="triggerHotspot()">📡 FORCE FALLBACK HOTSPOT</button>
-<button class="btn wifi-style" onclick="triggerWifiReconnect()">🌐 CONNECT TO HOME WIFI</button>
 <button class="btn reboot-style" onclick="triggerReboot()">REBOOT DEVICE</button></div>
 <div class="ota-box"><span style="color:#fff;font-size:12px;font-weight:bold;">WIRELESS FIRMWARE UPGRADE (OTA)</span>
 <form method="POST" action="/update" enctype="multipart/form-data" style="margin-top:8px;">
@@ -55,6 +58,13 @@ h1{font-size:20px;margin-bottom:2px;color:#fff;}
 <input type="submit" value="Flash Binary" class="btn" style="margin-top:8px;border-color:#aaa;color:#fff;"></form></div>
 <script>
 let isWaiting=false;let oledOn=true;
+async function saveWifiCredentials(){
+const s=document.getElementById('wifi-ssid').value;const p=document.getElementById('wifi-pass').value;
+if(!s){alert('Router name cannot be left blank!');return;}
+if(confirm('Save network tokens to flash memory? Hotspot will shut down.')){
+fetch('/savewifi?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p));
+alert('Credentials saved! Unit is joining network. Check C3 screen for IP details.');}
+}
 async function setSensitivity(m){
 if(isWaiting)return;isWaiting=true;setButtonsDisabled(true);
 try{await fetch('/setsens?mode='+m);await updateTextLabelsOnce();}catch(e){}
@@ -66,28 +76,21 @@ try{await fetch('/flipdisplay');}catch(e){}
 setTimeout(()=>{isWaiting=false;},120);
 }
 async function toggleScreenPower(){
-if(isWaiting)return;isWaiting=true;oledOn=!oledOn;
-const b=document.getElementById('btn-screen');
+if(isWaiting)return;isWaiting=true;oledOn=!oledOn;const b=document.getElementById('btn-screen');
 if(oledOn){b.innerText='SWITCH OFF OLED';b.style.color='#ffaa00';b.style.borderColor='#ffaa00';}
 else{b.innerText='SWITCH ON OLED';b.style.color='#888';b.style.borderColor='#444';}
 try{await fetch('/togglescreen');}catch(e){}
 setTimeout(()=>{isWaiting=false;},120);
 }
 async function toggleLED(){
-if(isWaiting)return;isWaiting=true;
-try{await fetch('/toggleled');await updateTextLabelsOnce();}catch(e){}
+if(isWaiting)return;isWaiting=true;try{await fetch('/toggleled');await updateTextLabelsOnce();}catch(e){}
 setTimeout(()=>{isWaiting=false;},120);
 }
 function setButtonsDisabled(state){
 const btns=document.getElementById('sens-group').getElementsByClassName('btn');
 for(let i=0;i<btns.length;i++){btns[i].disabled=state;}
 }
-function triggerHotspot(){
-if(confirm('Force local hotspot mode?')){fetch('/forceap');alert('Hotspot deployed! Connect to: LeakDetector-AP');}
-}
-function triggerWifiReconnect(){
-if(confirm('Reconnect to home Wi-Fi?')){fetch('/connectwifi');alert('Reconnecting. Hotspot shutting down...');}
-}
+function triggerHotspot(){if(confirm('Force local hotspot mode?')){fetch('/forceap');alert('Hotspot deployed! Connect to: LeakDetector-AP');}}
 function triggerReboot(){if(confirm('Confirm system reboot request?')){fetch('/reboot');alert('Reboot deployed. Reconnecting...');setTimeout(()=>{location.reload();},4000);}}
 async function updateTextLabelsOnce(){try{let r=await fetch('/getdata');let json=await r.json();
 document.getElementById('ver-display').innerText='Firmware: '+json.version;
